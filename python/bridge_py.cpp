@@ -102,6 +102,13 @@ PYBIND11_MODULE(_bridge, m) {
         return resp;
     }, py::arg("client_fd"), py::arg("command"), py::arg("payload") = py::bytes(""), py::arg("timeout_ms") = -1);
 
+    m.def("client_check_for_message", [](int client_fd) {
+        // release the GIL while doing blocking C++ I/O
+        py::gil_scoped_release release;
+        Message resp = bridge_client_check_for_message(client_fd);
+        return resp;
+    }, py::arg("client_fd"));
+
     // get_peer_pid
     m.def("get_peer_pid", [](int fd) -> int {
         pid_t pid = get_peer_pid(fd);

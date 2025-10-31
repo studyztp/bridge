@@ -124,3 +124,4 @@ void run_bridge_server_loop(int listen_fd);
 void setup_bridge_server();
 int setup_bridge_client(std::string client_name);
 Message bridge_client_send_and_wait_response(int client_fd, const uint8_t* message, size_t length, int timeout_ms = -1);
+Message bridge_client_check_for_message(int client_fd);

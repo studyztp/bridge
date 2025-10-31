@@ -514,4 +514,41 @@ void setup_bridge_server() {
     cleanup_bridge(listen_fd);
 };
 
+Message bridge_client_check_for_message(int client_fd) {
+    // Ensure the socket is non-blocking so reads don't block indefinitely.
+    set_nonblocking(client_fd);
 
+    Message response;
+    std::vector<uint8_t> resp_buffer;
+
+    char buf[1024];
+    // Read available data (loop until EAGAIN)
+    while (true) {
+        ssize_t n = read(client_fd, buf, sizeof(buf));
+        if (n > 0) {
+            resp_buffer.insert(resp_buffer.end(), 
+                            reinterpret_cast<uint8_t*>(buf), 
+                            reinterpret_cast<uint8_t*>(buf) + n);
+        } else if (n == 0) {
+            // peer closed connection
+            WARNING_MSG("Server closed connection\n");
+            break;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // no more data for now
+                break;
+            } else if (errno == EINTR) {
+                continue; // try read again
+            } else {
+                perror("read");
+                // return what we have (possibly empty)
+                return response;
+            }
+        }
+    }
+    // Try to parse a framed Message from the accumulated bytes.
+    if (try_extract_message(resp_buffer, response)) {
+        DPRINTF("Received framed message cmd=%d payload_len=%zu\n", response.command, response.length());
+    }
+    return response;
+}
