@@ -1,7 +1,11 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -I$(PWD)/.. 
+CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -I$(PWD)/.. 
 AR = ar
 RANLIB = ranlib
+
+ifeq ($(DEBUG), 1)
+CXXFLAGS += -g -DDEBUG
+endif
 
 LIB = ../libbridge.a
 LIBOBJ = ../bridge.o

@@ -1,11 +1,15 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -I.. 
+CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -I.. 
 AR = ar
 RANLIB = ranlib
 LDFLAGS = -pthread
 
 LIB = ../libbridge.a
 LIBOBJ = ../bridge.o
+
+ifeq ($(DEBUG), 1)
+CXXFLAGS += -g -DDEBUG
+endif
 
 all: $(LIB) test_framing test_socket_io
 

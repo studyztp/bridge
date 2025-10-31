@@ -17,6 +17,16 @@
 #include <unordered_set>
 #include <memory>
 
+#if DEBUG
+#define DPRINTF(...) do { std::printf(__VA_ARGS__); } while (0)
+#else
+#define DPRINTF(...) do { } while (0)
+#endif
+
+#define WARNING_MSG(...) \
+    do { std::fprintf(stderr, "WARNING: "); \
+         std::fprintf(stderr, __VA_ARGS__); } while (0)
+
 enum COMMAND {
     INVALID,
     INITIALIZE,

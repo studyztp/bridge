@@ -41,7 +41,7 @@ void bridge_client_send_message(int client_fd, const uint8_t* message, size_t le
     if (bytes_sent < 0) {
         fatal_error("write");
     }
-    std::printf("Sent %zd bytes to bridge server\n", bytes_sent);
+    DPRINTF("Sent %zd bytes to bridge server\n", bytes_sent);
 }
 
 void bridge_server_send_message(int client_fd, const uint8_t* message, size_t length) {
@@ -49,7 +49,7 @@ void bridge_server_send_message(int client_fd, const uint8_t* message, size_t le
     if (bytes_sent < 0) {
         fatal_error("write");
     }
-    std::printf("Sent %zd bytes to client %d\n", bytes_sent, client_fd);
+    DPRINTF("Sent %zd bytes to client %d\n", bytes_sent, client_fd);
 }
 
 pid_t get_peer_pid(int fd) {
@@ -75,7 +75,7 @@ void interrupt_client(std::string name) {
            pid_t pid = it->second->pid;
         if (pid > 0) {
             if (kill(pid, SIGUSR1) == 0) {
-                std::printf("Sent SIGUSR1 to client %s (pid %d)\n", name.c_str(), pid);
+                DPRINTF("Sent SIGUSR1 to client %s (pid %d)\n", name.c_str(), pid);
             } else {
                 perror("kill");
             }
@@ -157,7 +157,7 @@ void initialize_client_name(std::shared_ptr<ClientConnection> client) {
     }
     client->name = name;
     clients_set[name] = client;
-    std::printf("Client initialized with name: %s\n", name.c_str());
+    DPRINTF("Client initialized with name: %s\n", name.c_str());
 }
 
 void ask_for_compute(std::shared_ptr<ClientConnection> client) {
@@ -181,12 +181,12 @@ void ask_for_compute(std::shared_ptr<ClientConnection> client) {
         convert_message_to_data(targeted_client->message, out_len, out_buf);
         bridge_server_send_message(client->fd, out_buf, out_len);
         delete[] out_buf;
-        std::printf("ask_for_compute: Sent COMPUTE_FINISH to client %s as data is ready from targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
+        DPRINTF("ask_for_compute: Sent COMPUTE_FINISH to client %s as data is ready from targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
         return;
     }
     // Forward the compute request to the targeted client
     interrupt_client(targeted_client_name);
-    std::printf("ask_for_compute: Forwarded compute request from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
+    DPRINTF("ask_for_compute: Forwarded compute request from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
     convert_message_to_data(client->message, out_len, out_buf);
     bridge_server_send_message(targeted_client->fd, out_buf, out_len);
     delete[] out_buf;
@@ -211,14 +211,14 @@ void compute_finish(std::shared_ptr<ClientConnection> client) {
     convert_message_to_data(client->message, out_len, out_buf);
     bridge_server_send_message(targeted_client->fd, out_buf, out_len);
     delete[] out_buf;
-    std::printf("compute_finish: Forwarded compute finish from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
+    DPRINTF("compute_finish: Forwarded compute finish from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
     Message response_msg;
     response_msg.command = ASK_FOR_SCHEDULE_STOP;
     response_msg.data.clear();
     convert_message_to_data(response_msg, out_len, out_buf);
     bridge_server_send_message(client->fd, out_buf, out_len);
     delete[] out_buf;
-    std::printf("compute_finish: Sent ASK_FOR_SCHEDULE_STOP to client %s\n", client_name.c_str());
+    DPRINTF("compute_finish: Sent ASK_FOR_SCHEDULE_STOP to client %s\n", client_name.c_str());
 }
 
 void compute_in_progress(std::shared_ptr<ClientConnection> client) {
@@ -239,7 +239,7 @@ void compute_in_progress(std::shared_ptr<ClientConnection> client) {
     convert_message_to_data(client->message, out_len, out_buf);
     bridge_server_send_message(targeted_client->fd, out_buf, out_len);
     delete[] out_buf;
-    std::printf("compute_in_progress: Forwarded compute in progress from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
+    DPRINTF("compute_in_progress: Forwarded compute in progress from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
 }
 
 void compute_data_ready() {
@@ -273,7 +273,7 @@ int setup_bridge_server_socket() {
     }
     set_nonblocking(listen_fd);
 
-    std::printf("Bridge server listening on %s\n", BRIDGE_SOCKET_PATH);
+    DPRINTF("Bridge server listening on %s\n", BRIDGE_SOCKET_PATH);
     return listen_fd;
 }
 
@@ -292,7 +292,7 @@ void accept_new_client(int listen_fd, std::vector<pollfd>& poll_fds, int& next_c
     conn->message.command = INVALID;
     clients[client_fd] = conn;
     poll_fds.push_back({client_fd, POLLIN, 0});
-    std::printf("New client connected: %d\n", client_fd);
+    WARNING_MSG("New client connected: %d\n", client_fd);
 }
 
 void run_bridge_server_loop(int listen_fd) {
@@ -301,9 +301,9 @@ void run_bridge_server_loop(int listen_fd) {
     int next_client_id = 1;
 
     // Debug: dump configured simulation connections
-    std::printf("Simulation connections mapping:\n");
+    DPRINTF("Simulation connections mapping:\n");
     for (const auto &p : simulation_connections) {
-        std::printf("  %s -> %s\n", p.first.c_str(), p.second.c_str());
+        DPRINTF("  %s -> %s\n", p.first.c_str(), p.second.c_str());
     }
 
     while (true) {
@@ -331,7 +331,7 @@ void run_bridge_server_loop(int listen_fd) {
                         clients.erase(client_fd);
                         poll_fds.erase(poll_fds.begin() + i);
                         --i;
-                        std::printf("Client disconnected: %d\n", client_fd);
+                        WARNING_MSG("Client disconnected: %d\n", client_fd);
                     } else {
                         auto itc = clients.find(client_fd);
                         if (itc == clients.end()) {
@@ -341,22 +341,22 @@ void run_bridge_server_loop(int listen_fd) {
                         auto conn = itc->second;
                         // Append received bytes to per-connection buffer
                         conn->recv_buffer.insert(conn->recv_buffer.end(), reinterpret_cast<uint8_t*>(buffer), reinterpret_cast<uint8_t*>(buffer) + bytes_read);
-                        std::printf("Received %zd bytes from client %d, buffered=%zu\n", bytes_read, client_fd, conn->recv_buffer.size());
+                        DPRINTF("Received %zd bytes from client %d, buffered=%zu\n", bytes_read, client_fd, conn->recv_buffer.size());
 
                         // Extract as many framed messages as present
                         Message parsed;
                         while (try_extract_message(conn->recv_buffer, parsed)) {
                             // Debug: print raw payload info
-                            std::printf("Parsed message: cmd=%d payload_len=%zu payload='", parsed.command, parsed.length());
+                            DPRINTF("Parsed message: cmd=%d payload_len=%zu payload='", parsed.command, parsed.length());
                             if (!parsed.data.empty()) {
                                 // print as readable string (may contain non-printables)
                                 std::string s(parsed.data.begin(), parsed.data.end());
-                                std::printf("%s", s.c_str());
+                                DPRINTF("%s", s.c_str());
                             }
-                            std::printf("'\n");
+                            DPRINTF("'\n");
                             // Store parsed message in connection and dispatch
                             conn->message = parsed;
-                            std::printf("Dispatching command=%d from client %d\n", conn->message.command, client_fd);
+                            WARNING_MSG("Dispatching command=%d from client %d\n", conn->message.command, client_fd);
                             switch (conn->message.command) {
                                 case INITIALIZE:
                                     initialize_client_name(conn);
@@ -404,7 +404,7 @@ int setup_bridge_client(std::string client_name) {
         fatal_error("connect");
     }
 
-    std::printf("Connected to bridge server at %s\n", BRIDGE_SOCKET_PATH);
+    WARNING_MSG("Connected to bridge server at %s\n", BRIDGE_SOCKET_PATH);
     // Send INITIALIZE message with client name as payload
     Message init_msg;
     init_msg.command = INITIALIZE;
@@ -416,7 +416,7 @@ int setup_bridge_client(std::string client_name) {
     if (bytes_sent < 0) {
         fatal_error("write");
     }
-    std::printf("Sent %zd bytes to bridge server\n", bytes_sent);
+    DPRINTF("Sent %zd bytes to bridge server\n", bytes_sent);
     return client_fd;
 }
 
@@ -430,7 +430,7 @@ Message bridge_client_send_and_wait_response(
     if (bytes_sent < 0) {
         fatal_error("write");
     }
-    std::printf("Sent %zd bytes to bridge server, "
+    DPRINTF("Sent %zd bytes to bridge server, "
                                     "waiting for response...\n", bytes_sent);
 
     struct pollfd pfd;
@@ -448,7 +448,7 @@ Message bridge_client_send_and_wait_response(
         } else if (ret == 0) {
             // timeout
             if (timeout_ms >= 0) {
-                std::printf("Poll timed out after %d ms\n", timeout_ms);
+                WARNING_MSG("Poll timed out after %d ms\n", timeout_ms);
             }
             break;
         } else {
@@ -463,7 +463,7 @@ Message bridge_client_send_and_wait_response(
                                         reinterpret_cast<uint8_t*>(buf) + n);
                     } else if (n == 0) {
                         // peer closed connection
-                        std::printf("Server closed connection\n");
+                        WARNING_MSG("Server closed connection\n");
                         break;
                     } else {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -480,12 +480,12 @@ Message bridge_client_send_and_wait_response(
                 }
                 // Try to parse a framed Message from the accumulated bytes.
                 if (try_extract_message(resp_buffer, response)) {
-                    std::printf("Received framed response cmd=%d payload_len=%zu\n", response.command, response.length());
+                    DPRINTF("Received framed response cmd=%d payload_len=%zu\n", response.command, response.length());
                     return response;
                 }
             }
             if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
-                std::printf(
+                WARNING_MSG(
                     "Socket error/hangup detected (revents=0x%x)\n", 
                                                                 pfd.revents);
                 break;
