@@ -185,10 +185,10 @@ void ask_for_compute(std::shared_ptr<ClientConnection> client) {
         return;
     }
     // Forward the compute request to the targeted client
-    interrupt_client(targeted_client_name);
     DPRINTF("ask_for_compute: Forwarded compute request from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
     convert_message_to_data(client->message, out_len, out_buf);
     bridge_server_send_message(targeted_client->fd, out_buf, out_len);
+    interrupt_client(targeted_client_name);
     delete[] out_buf;
 }
 
@@ -211,6 +211,7 @@ void compute_finish(std::shared_ptr<ClientConnection> client) {
     convert_message_to_data(client->message, out_len, out_buf);
     bridge_server_send_message(targeted_client->fd, out_buf, out_len);
     delete[] out_buf;
+    out_buf = nullptr; out_len = 0;
     DPRINTF("compute_finish: Forwarded compute finish from client %s to targeted client %s\n", client_name.c_str(), targeted_client_name.c_str());
     Message response_msg;
     response_msg.command = ASK_FOR_SCHEDULE_STOP;
