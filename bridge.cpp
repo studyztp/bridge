@@ -309,6 +309,12 @@ void run_bridge_server_loop(int listen_fd) {
     while (true) {
         int ret = poll(poll_fds.data(), poll_fds.size(), -1);
         if (ret < 0) {
+            if (errno == EINTR) {
+                DPRINTF("poll interrupted by signal\n");
+                // Return to caller so higher-level code (e.g. Python) can handle
+                // the signal (KeyboardInterrupt). Avoid fatal exit on EINTR.
+                return;
+            }
             fatal_error("poll");
         }
 
@@ -443,7 +449,12 @@ Message bridge_client_send_and_wait_response(
     while (true) {
         int ret = poll(&pfd, 1, timeout_ms);
         if (ret < 0) {
-            if (errno == EINTR) continue; // interrupted, try again
+            if (errno == EINTR) {
+                DPRINTF("poll interrupted by signal while waiting for response\n");
+                // Return immediately so higher-level code (e.g. Python) can
+                // handle the signal (KeyboardInterrupt). Avoid retrying here.
+                return response;
+            }
             fatal_error("poll");
         } else if (ret == 0) {
             // timeout
