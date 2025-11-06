@@ -1,9 +1,13 @@
+// Clean single-file pybind11 wrapper for bridge
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/pytypes.h>
 
 #include "../bridge.hpp"
 #include <stdexcept>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 namespace py = pybind11;
 
@@ -15,16 +19,13 @@ static py::bytes message_payload_to_pybytes(const Message &m) {
 PYBIND11_MODULE(_bridge, m) {
     m.doc() = "Python bindings for bridge library (Unix-domain socket helpers)";
 
-    // COMMAND enum
+    // COMMAND enum (match values defined in bridge.hpp)
     py::enum_<COMMAND>(m, "COMMAND")
         .value("INVALID", COMMAND::INVALID)
-        .value("INITIALIZE", COMMAND::INITIALIZE)
-        .value("ASK_FOR_COMPUTE", COMMAND::ASK_FOR_COMPUTE)
-        .value("COMPUTE_FINISH", COMMAND::COMPUTE_FINISH)
-        .value("COMPUTE_IN_PROGRESS", COMMAND::COMPUTE_IN_PROGRESS)
-        .value("COMPUTE_DATA_READY", COMMAND::COMPUTE_DATA_READY)
-        .value("ASK_FOR_SCHEDULE_STOP", COMMAND::ASK_FOR_SCHEDULE_STOP)
-        .value("WAIT_FOR_ROBOT_SIGNAL", COMMAND::WAIT_FOR_ROBOT_SIGNAL)
+        .value("INITIALIZE_SERVER", COMMAND::INITIALIZE_SERVER)
+        .value("INITIALIZE_CLIENT", COMMAND::INITIALIZE_CLIENT)
+        .value("COMPUTE_REQUEST", COMMAND::COMPUTE_REQUEST)
+        .value("COMPUTE_RESPONSE", COMMAND::COMPUTE_RESPONSE)
         .export_values();
 
     // Message class
@@ -32,9 +33,7 @@ PYBIND11_MODULE(_bridge, m) {
         .def(py::init<>())
         .def_readwrite("command", &Message::command)
         .def_property("data",
-            [](const Message &msg){
-                return message_payload_to_pybytes(msg);
-            },
+            [](const Message &msg){ return message_payload_to_pybytes(msg); },
             [](Message &msg, py::bytes b){
                 std::string s = static_cast<std::string>(b);
                 msg.data.assign(reinterpret_cast<const uint8_t*>(s.data()),
@@ -42,92 +41,71 @@ PYBIND11_MODULE(_bridge, m) {
             }
         );
 
-    // Server-side: simulation_connections helpers (get/set/copy)
-    m.def("get_simulation_connections", [](){
-        py::dict d;
-        for (const auto &kv : simulation_connections) {
-            d[py::str(kv.first)] = py::str(kv.second);
-        }
-        return d;
+    // Helper server socket
+    m.def("bridge_setup_helper_server_socket", [](){
+        int fd = bridge_setup_helper_server_socket();
+        if (fd < 0) throw std::runtime_error("bridge_setup_helper_server_socket failed");
+        return fd;
     });
 
-    m.def("set_simulation_connections", [](py::dict d){
-        simulation_connections.clear();
-        for (auto item : d) {
-            std::string k = py::str(item.first);
-            std::string v = py::str(item.second);
-            simulation_connections[k] = v;
+    m.def("bridge_close_helper_server_socket", [](int listen_fd){
+        return bridge_close_helper_server_socket(listen_fd);
+    }, py::arg("listen_fd"));
+
+    m.def("bridge_helper_server_loop", [](int listen_fd, std::unordered_map<std::string,std::string> mapping){
+        // release GIL as this is a blocking loop
+        py::gil_scoped_release release;
+        return bridge_helper_server_loop(listen_fd, mapping);
+    }, py::arg("listen_fd"), py::arg("client_to_server_match"));
+
+    // Server setup: returns tuple (client_pid, listen_fd)
+    m.def("bridge_setup_server", [](const std::string &server_name){
+        pid_t client_pid = -1;
+        int socket_fd = -1;
+        if (bridge_setup_server(server_name, client_pid, socket_fd) < 0) {
+            throw std::runtime_error("bridge_setup_server failed");
         }
-    }, py::arg("mapping"));
+        return py::make_tuple((int)client_pid, socket_fd);
+    }, py::arg("server_name"));
 
-    m.def("sim_set", [](const std::string &k, const std::string &v){
-        simulation_connections[k] = v;
-    }, py::arg("source"), py::arg("target"));
-
-    m.def("sim_clear", [](){ simulation_connections.clear(); });
-
-    // setup_bridge_client: returns fd
-    m.def("setup_bridge_client", [](const std::string &client_name) -> int {
-        int fd = setup_bridge_client(client_name);
-        if (fd < 0) throw std::runtime_error("setup_bridge_client failed");
-        return fd;
+    // Client setup: returns tuple (server_pid, socket_fd)
+    m.def("bridge_setup_client", [](const std::string &client_name){
+        pid_t server_pid = -1;
+        int socket_fd = -1;
+        if (bridge_setup_client(client_name, server_pid, socket_fd) < 0) {
+            throw std::runtime_error("bridge_setup_client failed");
+        }
+        return py::make_tuple((int)server_pid, socket_fd);
     }, py::arg("client_name"));
 
-    // client_send_and_wait: convenience wrapper that builds Message, serializes it,
-    // calls bridge_client_send_and_wait_response and returns a Message instance.
-    m.def("client_send_and_wait", [](int client_fd, int command, py::bytes payload, int timeout_ms){
-        Message req;
-        req.command = static_cast<COMMAND>(command);
-        std::string s = static_cast<std::string>(payload);
-        req.data.assign(reinterpret_cast<const uint8_t*>(s.data()),
-                        reinterpret_cast<const uint8_t*>(s.data()) + s.size());
-
-        size_t out_len = 0;
-        uint8_t* out_buf = nullptr;
-        convert_message_to_data(req, out_len, out_buf);
-        if (!out_buf) throw std::runtime_error("convert_message_to_data failed");
-
+    // send and wait for response
+    m.def("bridge_send_and_wait_for_response", [](int socket_fd, const Message &msg, int timeout_ms){
         Message resp;
-        try {
-            // release the GIL while waiting for the response (blocking C++ I/O)
-            py::gil_scoped_release release;
-            resp = bridge_client_send_and_wait_response(client_fd, out_buf, out_len, timeout_ms);
-        } catch (...) {
-            delete[] out_buf;
-            throw;
+        if (bridge_send_and_wait_for_response(socket_fd, msg, resp, timeout_ms) < 0) {
+            throw std::runtime_error("bridge_send_and_wait_for_response failed");
         }
-        delete[] out_buf;
-
-        // return a new Message (pybind will convert)
         return resp;
-    }, py::arg("client_fd"), py::arg("command"), py::arg("payload") = py::bytes(""), py::arg("timeout_ms") = -1);
+    }, py::arg("socket_fd"), py::arg("msg"), py::arg("timeout_ms") = -1);
 
-    m.def("client_check_for_message", [](int client_fd) {
-        // release the GIL while doing blocking C++ I/O
+    m.def("bridge_wait_for_message", [](int socket_fd, int timeout_ms){
+        // release GIL while blocking read
         py::gil_scoped_release release;
-        Message resp = bridge_client_check_for_message(client_fd);
-        return resp;
-    }, py::arg("client_fd"));
+        return bridge_wait_for_message(socket_fd, timeout_ms);
+    }, py::arg("socket_fd"), py::arg("timeout_ms") = -1);
 
-    // get_peer_pid
-    m.def("get_peer_pid", [](int fd) -> int {
-        pid_t pid = get_peer_pid(fd);
-        if (pid < 0) throw std::runtime_error("get_peer_pid failed");
-        return static_cast<int>(pid);
+    m.def("bridge_send_message", [](int socket_fd, const Message &msg){
+        if (bridge_send_message(socket_fd, msg) < 0) throw std::runtime_error("bridge_send_message failed");
+        return 0;
+    }, py::arg("socket_fd"), py::arg("msg"));
+
+    m.def("bridge_send_interrupt", [](int pid){
+        if (bridge_send_interrupt((pid_t)pid) < 0) throw std::runtime_error("bridge_send_interrupt failed");
+        return 0;
+    }, py::arg("pid"));
+
+    m.def("get_fd_pid", [](int fd)->int{
+        pid_t p = get_fd_pid(fd);
+        if (p < 0) throw std::runtime_error("get_fd_pid failed");
+        return (int)p;
     }, py::arg("fd"));
-
-    // interrupt_client
-    m.def("interrupt_client", [](const std::string &name){
-        interrupt_client(name);
-    }, py::arg("name"));
-
-    // utility: close fd
-    m.def("close_fd", [](int fd){ if (fd >= 0) ::close(fd); }, py::arg("fd"));
-
-    // Expose server socket setup and run loop (advanced use)
-    m.def("setup_bridge_server_socket", []() -> int { return setup_bridge_server_socket(); });
-    m.def("run_bridge_server_loop", [](int listen_fd){
-        py::gil_scoped_release release;
-        run_bridge_server_loop(listen_fd);
-    }, py::arg("listen_fd"));
 }
