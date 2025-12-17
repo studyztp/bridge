@@ -26,6 +26,7 @@ PYBIND11_MODULE(_bridge, m) {
         .value("INITIALIZE_CLIENT", COMMAND::INITIALIZE_CLIENT)
         .value("COMPUTE_REQUEST", COMMAND::COMPUTE_REQUEST)
         .value("COMPUTE_RESPONSE", COMMAND::COMPUTE_RESPONSE)
+        .value("SETUP_TIMESTEP", COMMAND::SETUP_TIMESTEP)
         .export_values();
 
     // Message class

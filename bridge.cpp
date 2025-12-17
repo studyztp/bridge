@@ -71,11 +71,16 @@ int bridge_close_helper_server_socket(int listen_fd) {
 
 int bridge_helper_server_loop(int listen_fd, 
     std::unordered_map<std::string, std::string> client_to_server_match) {
-    std::unordered_map<std::string, pid_t> server_to_socket_set;
+    std::unordered_map<std::string, pid_t> server_to_pid;
     std::unordered_map<std::string, int> waiting_clients;
     std::vector<pollfd> poll_fds;
     poll_fds.push_back({listen_fd, POLLIN, 0});
     int ret, client_fd;
+    auto fd_is_valid = [](int fd) -> bool {
+        if (fd < 0) return false;
+        if (fcntl(fd, F_GETFD) == -1) return false;
+        return true;
+    };
     while (!client_to_server_match.empty()) {
         ret = poll(poll_fds.data(), poll_fds.size(), -1);
         if (ret < 0) {
@@ -105,12 +110,24 @@ int bridge_helper_server_loop(int listen_fd,
 
             // Otherwise it's activity on a client/helper connection.
             client_fd = poll_fds[i].fd;
+
+            if (!fd_is_valid(client_fd)) {
+                WARNING_MSG("Invalid fd %d seen in poll events, closing\n", client_fd);
+                close(client_fd);
+                poll_fds.erase(poll_fds.begin() + i);
+                --i;
+                continue;
+            }
+
             char buffer[MAX_BUFFER_SIZE];
             ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
 
             if (bytes_read <= 0) {
-                if (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    std::perror("read");
+                if (bytes_read < 0) {
+                    int saved = errno;
+                    WARNING_MSG("read on fd %d failed: %s (%d)\n", client_fd, strerror(saved), saved);
+                } else {
+                    WARNING_MSG("Connection closed while reading fd %d\n", client_fd);
                 }
                 close(client_fd);
                 poll_fds.erase(poll_fds.begin() + i);
@@ -132,7 +149,7 @@ int bridge_helper_server_loop(int listen_fd,
                     std::string server_name =
                         convert_bytes_to_string(parsed.data.data(), parsed.length());
                     pid_t pid = get_fd_pid(client_fd);
-                    server_to_socket_set[server_name] = pid;
+                    server_to_pid[server_name] = pid;
                     DPRINTF("Registered server %s with pid %d\n", server_name.c_str(), pid);
                     if (!waiting_clients.empty()) {
                         for (auto it = waiting_clients.begin(); it != waiting_clients.end(); ++it) {
@@ -144,7 +161,11 @@ int bridge_helper_server_loop(int listen_fd,
                                 response.command = INITIALIZE_SERVER;
                                 response.data.resize(sizeof(pid_t));
                                 std::memcpy(response.data.data(), &pid, sizeof(pid_t));
-                                bridge_send_message(it->second, response);
+                                if (fd_is_valid(it->second)) {
+                                    bridge_send_message(it->second, response);
+                                } else {
+                                    WARNING_MSG("Attempt to send to invalid fd %d for client %s\n", it->second, client_name.c_str());
+                                }
                                 DPRINTF("Sent server pid %d to client %s\n", pid, client_name.c_str());
                                 waiting_clients.erase(it);
                                 client_to_server_match.erase(client_name);
@@ -163,15 +184,19 @@ int bridge_helper_server_loop(int listen_fd,
                         break;
                     }
                     std::string expected_server = expected_it->second;
-                    auto server_it = server_to_socket_set.find(expected_server);
-                    if (server_it != server_to_socket_set.end()) {
+                    auto server_it = server_to_pid.find(expected_server);
+                    if (server_it != server_to_pid.end()) {
                         // server is already registered, send pid immediately
                         Message response;
                         response.command = INITIALIZE_SERVER;
                         response.data.resize(sizeof(pid_t));
                         pid_t server_pid = server_it->second;
                         std::memcpy(response.data.data(), &server_pid, sizeof(pid_t));
-                        bridge_send_message(client_fd, response);
+                        if (fd_is_valid(client_fd)) {
+                            bridge_send_message(client_fd, response);
+                        } else {
+                            WARNING_MSG("Client fd %d invalid when sending pid to %s\n", client_fd, client_name.c_str());
+                        }
                         DPRINTF("Sent server pid %d to client %s\n", server_pid, client_name.c_str());
                         client_to_server_match.erase(client_name);
                     } else {
@@ -297,6 +322,30 @@ int bridge_setup_server(std::string server_name, pid_t& client_pid,
     // Close the helper socket after sending the message
     close(helper_socket_fd);
 
+    // Wait for a client to connect to our server socket. The client will
+    // connect after receiving the server pid from the helper. Accept the
+    // connection here and return the connected socket fd to the caller so
+    // callers don't accidentally call read() on a listening socket.
+    struct pollfd pfd;
+    pfd.fd = socket_fd;
+    pfd.events = POLLIN;
+    int pret = poll(&pfd, 1, -1); // block until a client connects
+    if (pret < 0) {
+        std::perror("poll");
+        close(socket_fd);
+        return -1;
+    }
+    int conn_fd = accept(socket_fd, nullptr, nullptr);
+    if (conn_fd < 0) {
+        std::perror("accept");
+        close(socket_fd);
+        return -1;
+    }
+    // Close the listening socket; return the connected socket fd.
+    close(socket_fd);
+    socket_fd = conn_fd;
+    DPRINTF("Accepted client connection on fd %d\n", socket_fd);
+
     return 0;
 }
 
@@ -328,35 +377,43 @@ Message bridge_wait_for_message(int socket_fd, int timeout_ms) {
     struct pollfd pfd;
     pfd.fd = socket_fd;
     pfd.events = POLLIN;
-    int ret = poll(&pfd, 1, timeout_ms);
-    if (ret < 0) {
-        std::perror("poll");
-        return Message();
-    } else if (ret == 0) {
-        WARNING_MSG("Timeout waiting for message\n");
-        return Message();
-    }
-
-    uint8_t buffer[MAX_BUFFER_SIZE];
-    ssize_t bytes_read = read(socket_fd, buffer, sizeof(buffer));
-    if (bytes_read <= 0) {
-        if (bytes_read < 0) {
-            std::perror("read");
-        } else {
-            WARNING_MSG("Connection closed while waiting for message\n");
+    int ret;
+    while (true) {
+        ret = poll(&pfd, 1, timeout_ms);
+        if (ret < 0) {
+            std::perror("poll");
+            return Message();
+        } else if (ret == 0) {
+            WARNING_MSG("Timeout waiting for message\n");
+            return Message();
         }
-        return Message();
-    }
 
-    Message received_msg;
-    if (!convert_data_to_message(buffer, bytes_read, received_msg)) {
-        WARNING_MSG("Failed to parse received message\n");
-        return Message();
+        uint8_t buffer[MAX_BUFFER_SIZE];
+        ssize_t bytes_read = read(socket_fd, buffer, sizeof(buffer));
+        if (bytes_read <= 0) {
+            if (bytes_read < 0) {
+                int saved = errno;
+                WARNING_MSG("read on fd %d failed: %s (%d)\n", socket_fd, strerror(saved), saved);
+            } else {
+                WARNING_MSG("Connection closed while waiting for message\n");
+            }
+            return Message();
+        }
+
+        Message received_msg;
+        if (!convert_data_to_message(buffer, bytes_read, received_msg)) {
+            WARNING_MSG("Failed to parse received message\n");
+            return Message();
+        }
+        return received_msg;
     }
-    return received_msg;
 }
 
 int bridge_send_message(int socket_fd, const Message &msg) {
+    if (socket_fd < 0 || fcntl(socket_fd, F_GETFD) == -1) {
+        WARNING_MSG("bridge_send_message: invalid socket fd %d\n", socket_fd);
+        return -1;
+    }
     size_t data_length;
     uint8_t* data_buffer = nullptr;
     convert_message_to_data(msg, data_length, data_buffer);

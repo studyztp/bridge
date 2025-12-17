@@ -2,22 +2,19 @@
 import sys
 import os
 import socket
+import fcntl
 import bridge._bridge as br
 
 
 def main():
     server_name = sys.argv[1] if len(sys.argv) > 1 else "server1"
     print(f"Server starting with name: {server_name}")
-    client_pid, listen_fd = br.bridge_setup_server(server_name)
-    print(f"Server listen fd: {listen_fd}, client_pid placeholder: {client_pid}")
+    client_pid, conn_fd = br.bridge_setup_server(server_name)
+    print(f"Server connected fd: {conn_fd}, client_pid placeholder: {client_pid}")
 
-    # wrap the listening fd in a Python socket and accept one connection
-    s = socket.fromfd(listen_fd, socket.AF_UNIX, socket.SOCK_STREAM)
-    # make sure blocking for example simplicity
+    # wrap the connected fd in a Python socket object for convenience
+    s = socket.socket(fileno=conn_fd)
     s.setblocking(True)
-    conn, _ = s.accept()
-    conn_fd = conn.fileno()
-    print(f"Accepted connection fd: {conn_fd}")
 
     # read one message from client
     msg = br.bridge_wait_for_message(conn_fd, 5000)
@@ -29,7 +26,6 @@ def main():
     m.data = b"ack"
     br.bridge_send_message(conn_fd, m)
 
-    conn.close()
     s.close()
     print("Server exiting")
 

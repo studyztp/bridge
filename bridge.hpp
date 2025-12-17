@@ -35,7 +35,8 @@ enum COMMAND {
     INITIALIZE_SERVER,
     INITIALIZE_CLIENT,
     COMPUTE_REQUEST,
-    COMPUTE_RESPONSE
+    COMPUTE_RESPONSE,
+    SETUP_TIMESTEP
 };
 // This is used to setup connections between the matching simulations.
 // This is needed because it can avoid adding extra parameters to each
